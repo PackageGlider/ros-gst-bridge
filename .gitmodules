@@ -1,0 +1,3 @@
+[submodule "dependencies/osrf_testing_tools_cpp"]
+	path = dependencies/osrf_testing_tools_cpp
+	url = https://github.com/osrf/osrf_testing_tools_cpp.git
