@@ -68,6 +68,8 @@ public:
 
   bool ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue* value, GstElement* element);
 
+  GstPad* get_pad_with_name(GstIterator* it, const std::string& name);
+
   rcl_interfaces::msg::SetParametersResult
   validate_parameters_cb(std::vector<rclcpp::Parameter> parameters);
 

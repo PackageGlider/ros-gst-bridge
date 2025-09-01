@@ -174,73 +174,23 @@ bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue
       // name of the pad but gstreamer needs an actual GstPad object for the property.
       if (GST_TYPE_PAD == G_VALUE_TYPE(value)) {
         // First we check all sink pads if there is one with the same name as the parameter value.
-        GValue item = G_VALUE_INIT;
         GstIterator* it = gst_element_iterate_sink_pads(element);
-        bool found_pad = false;
-        bool done = false;
-        while (!(done || found_pad)) {
-          switch (gst_iterator_next(it, &item)) {
-            case GST_ITERATOR_OK: {
-              GstPad* pad = GST_PAD(g_value_get_object(&item));
-              gchar* pad_name = gst_pad_get_name(pad);
-
-              if (g_strcmp0(pad_name, parameter.as_string().c_str()) == 0) {
-                // Found a pad with the right name, set v to it.
-                g_value_init(&v, GST_TYPE_PAD);
-                g_value_set_object(&v, pad);
-                gst_object_unref(pad);
-                found_pad = true;
-              }
-
-              g_free(pad_name);
-              // Reset the GValue for the next iteration
-              g_value_reset(&item);
-              break;
-            }
-            case GST_ITERATOR_DONE:
-              done = true;
-              break;
-            case GST_ITERATOR_ERROR:
-              done = true;
-              break;
-          }
-        }
-
+        GstPad* pad = get_pad_with_name(it, parameter.as_string());
         gst_iterator_free(it);
 
-        // If we haven't found the right pad yet, we also check the source pads.
-        it = gst_element_iterate_src_pads(element);
-        done = false;
-        while (!(done || found_pad)) {
-          switch (gst_iterator_next(it, &item)) {
-            case GST_ITERATOR_OK: {
-              GstPad* pad = GST_PAD(g_value_get_object(&item));
-              gchar* pad_name = gst_pad_get_name(pad);
-
-              if (g_strcmp0(pad_name, parameter.as_string().c_str()) == 0) {
-                g_value_init(&v, GST_TYPE_PAD);
-                g_value_set_object(&v, pad);
-                gst_object_unref(pad);
-                found_pad = true;
-              }
-
-              g_free(pad_name);
-              // Reset the GValue for the next iteration
-              g_value_reset(&item);
-              break;
-            }
-            case GST_ITERATOR_DONE:
-              done = true;
-              break;
-            case GST_ITERATOR_ERROR:
-              done = true;
-              break;
-          }
+        if (pad == nullptr) {
+          // If we haven't found the right pad yet, we also check the source pads.
+          it = gst_element_iterate_src_pads(element);
+          pad = get_pad_with_name(it, parameter.as_string());
+          gst_iterator_free(it);
         }
 
-        if (!found_pad) {
+        g_value_init(&v, GST_TYPE_PAD);
+        if (pad != nullptr) {
+          g_value_set_object(&v, pad);
+          gst_object_unref(pad);
+        } else {
           RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not find pad with name '%s'", parameter.as_string().c_str());
-          g_value_init(&v, GST_TYPE_PAD);
           g_value_set_object(&v, NULL);
         }
       } else {
@@ -379,9 +329,43 @@ bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue
 
 
 
+GstPad* parameters::get_pad_with_name(GstIterator* it, const std::string& name) {
+  GstPad* result = nullptr;
+  GValue item = G_VALUE_INIT;
+  bool done = false;
+  while (!done) {
+    switch (gst_iterator_next(it, &item)) {
+      case GST_ITERATOR_OK: {
+        GstPad* pad = GST_PAD(g_value_get_object(&item));
+        gchar* pad_name = gst_pad_get_name(pad);
 
+        if (g_strcmp0(pad_name, name.c_str()) == 0) {
+          done = true;
+          result = pad;
+        }
 
+        g_free(pad_name);
+        // Reset the GValue for the next iteration
+        g_value_reset(&item);
+        break;
+      }
 
+      case GST_ITERATOR_DONE:
+        done = true;
+        break;
+
+      case GST_ITERATOR_ERROR:
+        done = true;
+        break;
+
+      case GST_ITERATOR_RESYNC:
+        gst_iterator_resync(it);
+        break;
+    }
+  }
+
+  return result;
+}
 
 
 
