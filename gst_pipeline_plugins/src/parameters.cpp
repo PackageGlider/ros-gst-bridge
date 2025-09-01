@@ -202,7 +202,6 @@ void parameters::declare_property(GstElement * element, GParamSpec* prop, std::s
     GValue prop_value = {0,0};
     g_value_init(&prop_value, prop->value_type);
     g_object_get_property(G_OBJECT(element), prop->name, &prop_value);
-    GST_OBJECT_LOCK(element);
     rclcpp::ParameterValue ros_value = g_value_to_ros_value(&prop_value);
 
     // test the parameter has a sensible type
@@ -226,11 +225,13 @@ void parameters::declare_property(GstElement * element, GParamSpec* prop, std::s
 
       // send a bus message if any of the property changes value
       //  we expect to receive a GstMessage of type GST_MESSAGE_PROPERTY_NOTIFY
+      GST_OBJECT_LOCK(element);
       gst_element_add_property_notify_watch(
         element,
         g_param_spec_get_name(prop),
         true
       );
+      GST_OBJECT_UNLOCK(element);
 
 
       // register a callback the parameter updates from ROS
@@ -246,7 +247,6 @@ void parameters::declare_property(GstElement * element, GParamSpec* prop, std::s
       );
 
     }
-    GST_OBJECT_UNLOCK(element);
 
   }
 }
@@ -261,6 +261,7 @@ parameters::validate_parameters_cb(std::vector<rclcpp::Parameter> parameters)
   result.successful = true;
 
   for (const rclcpp::Parameter& parameter : parameters) {
+    GstElement* element = NULL;
     // find the property matching the parameter
     GParamSpec* prop = NULL;
     //GstElement* element = NULL;
@@ -275,7 +276,7 @@ parameters::validate_parameters_cb(std::vector<rclcpp::Parameter> parameters)
     try {
       parameter_mapping &map = param_map_.at(parameter.get_name());
       prop = map.prop;
-      //element = map.element;
+      element = map.element;
       source = &map.source;
     }
     catch (const std::out_of_range& oor) {
@@ -286,7 +287,7 @@ parameters::validate_parameters_cb(std::vector<rclcpp::Parameter> parameters)
     {
       GValue new_value = {0,0};
       // check the type and recover a corresponding gvalue
-      if(! ros_value_to_g_value(parameter, g_value_init (&new_value, G_PARAM_SPEC_VALUE_TYPE(prop)))){
+      if(! ros_value_to_g_value(parameter, g_value_init (&new_value, G_PARAM_SPEC_VALUE_TYPE(prop)), element)){
         result.successful = false;
         result.reason = "wrong type";
         // XXX  ... " try a my_ros_type_string(prop->value_type)"
@@ -351,7 +352,7 @@ void parameters::update_parameters_cb(const rclcpp::Parameter &parameter)
   {
     GValue new_value = {0,0};
     GValue old_value = {0,0};
-    ros_value_to_g_value(parameter, g_value_init (&new_value, prop->value_type));
+    ros_value_to_g_value(parameter, g_value_init (&new_value, prop->value_type), element);
     g_object_get_property(G_OBJECT(element), prop->name, &old_value);
 
     switch(*source){

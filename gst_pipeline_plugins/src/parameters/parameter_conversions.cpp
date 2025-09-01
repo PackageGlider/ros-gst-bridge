@@ -127,6 +127,22 @@ rclcpp::ParameterValue parameters::g_value_to_ros_value(const GValue* value)
           }
         }
       }
+
+      if(GST_TYPE_PAD == G_VALUE_TYPE(value))
+      {
+        GstPad* pad = GST_PAD(g_value_get_object(value));
+        if(pad != NULL) {
+          const char* pad_name = gst_pad_get_name(pad);
+          if (pad_name == nullptr) {
+            RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not get pad name");
+          }
+          param_value = rclcpp::ParameterValue(pad_name ? pad_name : "");
+        } else {
+          RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not get pad");
+          param_value = rclcpp::ParameterValue("");
+        }
+      }
+
     } break;
   }
 
@@ -139,7 +155,7 @@ rclcpp::ParameterValue parameters::g_value_to_ros_value(const GValue* value)
 
 
 
-bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue* value)
+bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue* value, GstElement* element)
 {
   GValue v = {0,0};
   switch(parameter.get_type()){
@@ -153,7 +169,84 @@ bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue
       g_value_set_double(g_value_init(&v, G_TYPE_DOUBLE), parameter.as_double());
       break;
     case PARAMETER_STRING:
-      g_value_set_string(g_value_init(&v, G_TYPE_STRING), parameter.as_string().c_str());
+
+      // Special handling for pad properties since here the parameter value is just the
+      // name of the pad but gstreamer needs an actual GstPad object for the property.
+      if (GST_TYPE_PAD == G_VALUE_TYPE(value)) {
+        // First we check all sink pads if there is one with the same name as the parameter value.
+        GValue item = G_VALUE_INIT;
+        GstIterator* it = gst_element_iterate_sink_pads(element);
+        bool found_pad = false;
+        bool done = false;
+        while (!(done || found_pad)) {
+          switch (gst_iterator_next(it, &item)) {
+            case GST_ITERATOR_OK: {
+              GstPad* pad = GST_PAD(g_value_get_object(&item));
+              gchar* pad_name = gst_pad_get_name(pad);
+
+              if (g_strcmp0(pad_name, parameter.as_string().c_str()) == 0) {
+                // Found a pad with the right name, set v to it.
+                g_value_init(&v, GST_TYPE_PAD);
+                g_value_set_object(&v, pad);
+                gst_object_unref(pad);
+                found_pad = true;
+              }
+
+              g_free(pad_name);
+              // Reset the GValue for the next iteration
+              g_value_reset(&item);
+              break;
+            }
+            case GST_ITERATOR_DONE:
+              done = true;
+              break;
+            case GST_ITERATOR_ERROR:
+              done = true;
+              break;
+          }
+        }
+
+        gst_iterator_free(it);
+
+        // If we haven't found the right pad yet, we also check the source pads.
+        it = gst_element_iterate_src_pads(element);
+        done = false;
+        while (!(done || found_pad)) {
+          switch (gst_iterator_next(it, &item)) {
+            case GST_ITERATOR_OK: {
+              GstPad* pad = GST_PAD(g_value_get_object(&item));
+              gchar* pad_name = gst_pad_get_name(pad);
+
+              if (g_strcmp0(pad_name, parameter.as_string().c_str()) == 0) {
+                g_value_init(&v, GST_TYPE_PAD);
+                g_value_set_object(&v, pad);
+                gst_object_unref(pad);
+                found_pad = true;
+              }
+
+              g_free(pad_name);
+              // Reset the GValue for the next iteration
+              g_value_reset(&item);
+              break;
+            }
+            case GST_ITERATOR_DONE:
+              done = true;
+              break;
+            case GST_ITERATOR_ERROR:
+              done = true;
+              break;
+          }
+        }
+
+        if (!found_pad) {
+          RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not find pad with name '%s'", parameter.as_string().c_str());
+          g_value_init(&v, GST_TYPE_PAD);
+          g_value_set_object(&v, NULL);
+        }
+      } else {
+        // Regular string parameter.
+        g_value_set_string(g_value_init(&v, G_TYPE_STRING), parameter.as_string().c_str());
+      }
       break;
 
     /*
@@ -227,6 +320,13 @@ bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue
         g_value_transform(&v, value);
         break;
       }
+
+      if(GST_TYPE_PAD == G_VALUE_TYPE(value))
+      {
+        g_value_transform(&v, value);
+        break;
+      }
+
       // XXX Is it possible to reliably infer the cell type of an empty array value?
       // https://docs.gtk.org/gobject/func.param_spec_value_array.html
 
