@@ -133,12 +133,32 @@ rclcpp::ParameterValue parameters::g_value_to_ros_value(const GValue* value)
         GstPad* pad = GST_PAD(g_value_get_object(value));
         if(pad != NULL) {
           const char* pad_name = gst_pad_get_name(pad);
-          if (pad_name == nullptr) {
+          if (pad_name != nullptr) {
+            param_value = rclcpp::ParameterValue(pad_name);
+          } else {
             RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not get pad name");
+            param_value = rclcpp::ParameterValue("");
           }
-          param_value = rclcpp::ParameterValue(pad_name ? pad_name : "");
         } else {
           RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not get pad");
+          param_value = rclcpp::ParameterValue("");
+        }
+      }
+
+      if(GST_TYPE_CAPS == G_VALUE_TYPE(value))
+      {
+        GstCaps* caps = GST_CAPS(g_value_get_boxed(value));
+        if(caps != NULL) {
+          gchar* caps_string = gst_caps_to_string(caps);
+          if (caps_string != nullptr) {
+            param_value = rclcpp::ParameterValue(caps_string);
+            g_free(caps_string);
+          } else {
+            RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not convert caps to string");
+            param_value = rclcpp::ParameterValue("");
+          }
+        } else {
+          RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not get caps");
           param_value = rclcpp::ParameterValue("");
         }
       }
@@ -192,6 +212,18 @@ bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue
         } else {
           RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not find pad with name '%s'", parameter.as_string().c_str());
           g_value_set_object(&v, NULL);
+        }
+      } else if (GST_TYPE_CAPS == G_VALUE_TYPE(value)) {
+        // Special handling for caps properties since here the parameter value is a string
+        // representation of caps but gstreamer needs an actual GstCaps object for the property.
+        g_value_init(&v, GST_TYPE_CAPS);
+        GstCaps* caps = gst_caps_from_string(parameter.as_string().c_str());
+        if (caps != nullptr) {
+          g_value_set_boxed(&v, caps);
+          gst_caps_unref(caps);
+        } else {
+          RCLCPP_ERROR(node_if_->logging->get_logger(), "Could not parse caps from string '%s'", parameter.as_string().c_str());
+          g_value_set_boxed(&v, NULL);
         }
       } else {
         // Regular string parameter.
@@ -272,6 +304,12 @@ bool parameters::ros_value_to_g_value(const rclcpp::Parameter& parameter, GValue
       }
 
       if(GST_TYPE_PAD == G_VALUE_TYPE(value))
+      {
+        g_value_transform(&v, value);
+        break;
+      }
+
+      if(GST_TYPE_CAPS == G_VALUE_TYPE(value))
       {
         g_value_transform(&v, value);
         break;
