@@ -17,6 +17,26 @@ This node loads via ros_components, and exposes node interfaces to a
 
 namespace gst_pipeline
 {
+
+static void bus_error_callback(GstBus* bus, GstMessage* message, gpointer user_data) {
+  gst_pipeline* pipeline_node = static_cast<gst_pipeline*>(user_data);
+
+  GError* error = nullptr;
+  gchar* debug_info = nullptr;
+  gst_message_parse_error(message, &error, &debug_info);
+
+  RCLCPP_FATAL(pipeline_node->get_logger(),
+    "GStreamer Error: %s. Debug info: %s",
+    error->message,
+    debug_info ? debug_info : "none");
+
+  g_clear_error(&error);
+  g_free(debug_info);
+
+  // Exit process. nvargus doesn't like when we restart or reconstruct the pipeline so it's
+  // best to just die and let the launch system resurrect us.
+  exit(1);
+}
 gst_pipeline::gst_pipeline(const rclcpp::NodeOptions & options) : Node("gst_pipes_node", options)
 {
   // get gstreamer ready
@@ -120,6 +140,9 @@ gst_pipeline::gst_pipeline(const rclcpp::NodeOptions & options) : Node("gst_pipe
   //     gst_bus_enable_sync_message_emission(bus);
   //     can we use both?
   gst_object_unref(bus);
+
+  // Connect to bus messages for error handling
+  g_signal_connect(bus, "message::error", G_CALLBACK(bus_error_callback), this);
 
   // XXX Connect to the pipeline clock
   // XXX Measure the ros clock offset and add a GstContext to the pipeline
