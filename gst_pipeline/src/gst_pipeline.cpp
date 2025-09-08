@@ -1,6 +1,11 @@
 
 #include <gst_pipeline.h>
 
+#include <unistd.h>
+#include <fcntl.h>
+#include <thread>
+#include <string>
+
 extern "C" {
 #include "gst/gst.h"
 }
@@ -37,6 +42,63 @@ static void bus_error_callback(GstBus* bus, GstMessage* message, gpointer user_d
   // best to just die and let the launch system resurrect us.
   exit(1);
 }
+
+static void custom_log_handler(const gchar* log_domain, GLogLevelFlags log_level,
+                              const gchar* message, gpointer user_data) {
+  gst_pipeline* pipeline_node = static_cast<gst_pipeline*>(user_data);
+  
+  std::string msg = message ? message : "";
+  
+  // Check for Argus-related errors in log messages
+  if (msg.find("(Argus) Error") != std::string::npos) {
+    RCLCPP_FATAL(pipeline_node->get_logger(), "Argus error detected in logs: %s - exiting for clean restart", msg.c_str());
+    exit(1);
+  }
+
+  // Call default log handler
+  g_log_default_handler(log_domain, log_level, message, user_data);
+}
+
+static void monitor_stderr_for_argus_errors(gst_pipeline* pipeline_node) {
+  int pipefd[2];
+  if (pipe(pipefd) == -1) {
+    RCLCPP_ERROR(pipeline_node->get_logger(), "Failed to create pipe for stderr monitoring");
+    return;
+  }
+
+  // Duplicate stderr and redirect it to our pipe
+  int stderr_backup = dup(STDERR_FILENO);
+  dup2(pipefd[1], STDERR_FILENO);
+  close(pipefd[1]);
+
+  // Thread to read from pipe and check for Argus errors
+  std::thread stderr_monitor([pipeline_node, pipefd, stderr_backup]() {
+    char buffer[1024];
+    FILE* pipe_read = fdopen(pipefd[0], "r");
+    FILE* stderr_backup_file = fdopen(stderr_backup, "w");
+    
+    while (fgets(buffer, sizeof(buffer), pipe_read)) {
+      std::string line(buffer);
+      
+      // Write to original stderr so we still see the output
+      fputs(buffer, stderr_backup_file);
+      fflush(stderr_backup_file);
+      
+      // Check for Argus errors
+      if (line.find("(Argus) Error") != std::string::npos) {
+        RCLCPP_FATAL(pipeline_node->get_logger(), 
+          "Argus error detected in stderr: %s - exiting for clean restart", line.c_str());
+        exit(1);
+      }
+    }
+    
+    fclose(pipe_read);
+    fclose(stderr_backup_file);
+  });
+
+  stderr_monitor.detach();
+}
+
 gst_pipeline::gst_pipeline(const rclcpp::NodeOptions & options) : Node("gst_pipes_node", options)
 {
   // get gstreamer ready
@@ -44,6 +106,12 @@ gst_pipeline::gst_pipeline(const rclcpp::NodeOptions & options) : Node("gst_pipe
   gst_init(nullptr, nullptr);
 
   RCLCPP_INFO(get_logger(), "Gstreamer version: %s", gst_version_string());
+
+  // Register our custom log handler instead of the default gstreamer one to detect Argus errors
+  g_log_set_handler(nullptr, G_LOG_LEVEL_MASK, custom_log_handler, this);
+  g_log_set_handler("ARGUS", G_LOG_LEVEL_MASK, custom_log_handler, this);
+
+  monitor_stderr_for_argus_errors(this);
 
   // validate and load the gstreamer plugin paths
   // XXX add a helper version that asks colcon where packages put their libs
