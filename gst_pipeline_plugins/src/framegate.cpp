@@ -55,8 +55,8 @@ void framegate::initialise(
         node_if->logging->get_logger(), "plugin framegate '%s' found '%s'",
         name_.c_str(), elem_name_.c_str());
 
-      // find the src pad of the element
-      GstPad * pad = gst_element_get_static_pad(bin_, "src");
+      // find the sink pad of the element
+      GstPad * pad = gst_element_get_static_pad(bin_, "sink");
       // attach our callback to whenever a buffer crosses the pad
       gst_pad_add_probe(
         pad, GST_PAD_PROBE_TYPE_BUFFER,
