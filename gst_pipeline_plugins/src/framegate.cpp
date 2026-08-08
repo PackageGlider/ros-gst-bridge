@@ -17,6 +17,12 @@ void framegate::initialise(
                    descr("the name of the source element inside the pipeline", true))
                  .get<std::string>();
 
+  keyframe_elem_name_ = node_if->parameters
+    ->declare_parameter(
+      name + ".keyframe_element_name", rclcpp::ParameterValue(""),
+      descr("encoder element to force a keyframe on when the gate opens", true))
+    .get<std::string>();
+
   gate_topic_ = node_if->parameters
                      ->declare_parameter(
                        name + ".gate_topic", rclcpp::ParameterValue("snap"),
@@ -56,6 +62,17 @@ void framegate::initialise(
         pad, GST_PAD_PROBE_TYPE_BUFFER,
         (GstPadProbeCallback)framegate::gst_pad_probe_cb, &gate_mode_, NULL);
 
+      // If keyframe element name is given we search for it in the pipeline
+      if (!keyframe_elem_name_.empty()) {
+        keyframe_elem_ = gst_bin_get_by_name(GST_BIN_CAST(pipeline_), keyframe_elem_name_.c_str());
+
+        if (!keyframe_elem_) {
+            RCLCPP_ERROR(
+              node_if->logging->get_logger(),
+              "plugin framegate '%s' failed to locate a keyframe element called '%s'. No keyframes will be sent.",
+              name_.c_str(), keyframe_elem_name_.c_str());
+        }
+      }
     }
 
     else {
@@ -74,7 +91,16 @@ void framegate::initialise(
 
 void framegate::gate_sub_cb(const gst_msgs::msg::FrameGate::SharedPtr msg)
 {
-  gate_mode_ = msg->mode;
+  const auto previous = gate_mode_.exchange(msg->mode);
+
+  const bool was_closed = (previous != gst_msgs::msg::FrameGate::PASS_ALL);
+  const bool now_open = (msg->mode == gst_msgs::msg::FrameGate::PASS_ALL);
+
+  if (was_closed && now_open && keyframe_elem_) {
+    // If we freshly opened the gate and we have a valid keyframe element,
+    // we tell it to generate a new I frame for a clean start.
+    g_signal_emit_by_name(keyframe_elem_, "force-IDR");
+  }
 }
 
 GstPadProbeReturn framegate::gst_pad_probe_cb(
@@ -83,7 +109,7 @@ GstPadProbeReturn framegate::gst_pad_probe_cb(
   (void)pad;
   (void)info;
   auto* mode = static_cast<decltype(gate_mode_)*>(user_data);
-  
+
   switch(*mode) {
   case(gst_msgs::msg::FrameGate::DROP_ALL):
     return GST_PAD_PROBE_DROP;
@@ -99,7 +125,7 @@ GstPadProbeReturn framegate::gst_pad_probe_cb(
   }
 
   return GST_PAD_PROBE_DROP;
-  
+
 }
 
 }  // namespace gst_pipeline_plugins
