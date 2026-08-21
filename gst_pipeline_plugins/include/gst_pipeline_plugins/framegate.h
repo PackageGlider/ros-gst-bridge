@@ -44,6 +44,11 @@ private:
   // the name of the target element in the pipeline
   std::string elem_name_;
 
+  // If there is an encoder after the framegate, it can be helpful
+  // to send a keyframe after the gate opens to cleanly reinitialize the video.
+  std::string keyframe_elem_name_;
+  GstElement * keyframe_elem_ = nullptr;
+
   // topic name
   std::string gate_topic_;
 
